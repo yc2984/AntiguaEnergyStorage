@@ -1,0 +1,1170 @@
+---
+title: "Antigua Project"
+author: "Yang"
+date: "November 22, 2014"
+output: pdf_document
+---
+
+```{r}
+# Load libraries
+library(knitr)
+library(lubridate)
+library(ggplot2)
+library(plyr)
+library(stats)
+```
+
+```{r}
+# set working directory
+setwd("E:/courseworks/Infrastructure planning/final project")
+```
+
+# Initial Data Processing
+
+In this part, we are going to process the original data so that they are easier to manipulate. The demand data is half hourly collected from 1/1/11 0:00 to 12/31/11 23:30. The wind data is measured as wind speed at five sites on Antigua. It is from 1/6/11 9:40 to 8/14/12 8:50 and is collected by every 10 minutes. The solar data is measured as solar irradiation per square meters. It is also from 1/6/11 9:40 to 8/14/12 8:50 and is collected by every 10 minutes.
+
+We are going to transform all the data to hourly basis and take the interest of time range of the overlapped time, which is from 1/7/11 0:00 to 12/31/11 23:00.
+
+We are also going to transfer wind data from wind speed hourly to wind generation hourly according to turbine power curve. We will transfer solar data from irradiation per square meter to solar power.
+
+## 1. Process the Demand Load Data
+
+1. Convert the demand load data from half hourly to hourly.
+2. Extract data from 2011-01-07 00:00 to 2011-12-31 23:00.
+
+```{r}
+demand.data.raw <- read.csv("AntiguaLoad.csv")
+colnames(demand.data.raw) <- c("date_time","demand.kw")
+
+# set timestamp of demand raw data
+demand.data.raw$date_time <- as.POSIXct(demand.data.raw$date_time, format = "%m/%d/%y %H:%M", tz = "UTC")
+# put the raw data into a new data frame to keep the original one
+demand.data.orig <- demand.data.raw
+
+# extract date and hour and put into new columnes
+demand.data.orig$date <- as.Date(demand.data.orig$date_time)
+demand.data.orig$hour <- hour(demand.data.orig$date_time)
+# convert 30 mins' data into hourly data
+demand.data.hrly <- ddply(demand.data.orig,.(date,hour),.fun=summarise,demand.hrly.kw=sum(demand.kw)/2)
+# convert date and hour back to date.time
+demand.data.hrly$date.time <- as.POSIXct(paste(as.character(demand.data.hrly$date), as.character(demand.data.hrly$hour),sep = " "), format = "%Y-%m-%d %H", tz = "UTC")
+
+# create a new demand data frame, # convert KW to MW, remain only data.time column
+demand.data <- data.frame(matrix(0,nrow=nrow(demand.data.hrly),ncol=2))
+colnames(demand.data) <- c("date.time","demand.mw")
+demand.data$date.time <- demand.data.hrly$date.time
+demand.data$demand.mw <- demand.data.hrly$demand.hrly.kw/1000
+
+# extract the target demand data from 2011.01.07 to 2011.12.31
+## set start time and end time
+start.datetime <- as.POSIXct("2011-01-07 0:00", format = "%Y-%m-%d %H:%M", tz = "UTC")
+end.datetime <- as.POSIXct("2011-12-31 23:00", format = "%Y-%m-%d %H:%M", tz = "UTC")
+## set time outside the range to NA
+demand.data$demand.mw[which(demand.data$date.time < start.datetime | demand.data$date.time > end.datetime)] <- NA
+## omit all NAs
+demand.data <- na.omit(demand.data)
+row.names(demand.data) <- NULL
+# View(demand.data)
+print(paste("sum of demand over the year = ", sum(demand.data$demand.mw),"MW"))
+write.csv(demand.data, file = "demand.data.csv")
+```
+
+```{r}
+# plot the load demand over the year
+ggplot(demand.data, aes(x=demand.data$date.time)) + 
+    geom_line(aes(y=demand.data$demand.mw,color="demand")) +
+    ylab("Demand (MW)") + 
+    xlab("time") +
+    labs(title="Load demand over the year") + 
+    theme_classic() +
+    theme(legend.position="bottom",legend.title=element_blank())
+```
+
+## 2. Process the Windsites Data
+
+Assume Bonus wind turbines (B2000) rated at 2MW to get wind generation hourly at all wind sites.
+
+1. Convert the demand load data from every 10 minutes to hourly.
+
+2. Extract data from 2011-01-07 00:00 to 2011-12-31 23:00.
+
+```{r}
+# import raw data of wind speeds at 5 wind sites in Antigua
+windspeed.data.raw <- read.csv("AntiguaWind.csv",stringsAsFactors = FALSE)
+# set timestamp of demand raw data
+windspeed.data.raw$TimeStamp <- as.POSIXct(as.character(windspeed.data.raw$TimeStamp),format="%m/%d/%y %H:%M",tz = "UTC")
+
+# create a new dataframe to put averaged windspeed data of each site
+windspeed.data.orig <- data.frame(matrix(0,nrow=nrow(windspeed.data.raw),ncol=6))
+colnames(windspeed.data.orig) <- c("date.time","windspd.site1","windspd.site2","windspd.site3","windspd.site4","windspd.site5")
+windspeed.data.orig$date.time <- windspeed.data.raw$TimeStamp
+for (i in 1:5) {
+  windspeed.data.orig[,i+1] <- windspeed.data.raw[,4*i-2]
+}
+
+# extract date and hour and put into new columnes
+windspeed.data.orig$date <- as.Date(windspeed.data.orig$date.time)
+windspeed.data.orig$hour <- hour(windspeed.data.orig$date.time)
+# convert 10 mins' data into hourly data
+windspeed.data.hrly <- ddply(windspeed.data.orig,.(date,hour),.fun=summarise,windspd.hrly.site1=sum(windspd.site1)/6,windspd.hrly.site2=sum(windspd.site2)/6,windspd.hrly.site3=sum(windspd.site3)/6,windspd.hrly.site4=sum(windspd.site4)/6,windspd.hrly.site5=sum(windspd.site5)/6)
+# convert date and hour back to date.time
+windspeed.data.hrly$date.time <- as.POSIXct(paste(as.character(windspeed.data.hrly$date), as.character(windspeed.data.hrly$hour),sep = " "), format = "%Y-%m-%d %H", tz = "UTC")
+# View(windspeed.data.hrly)
+
+
+# create a new windspeed data frame
+windspeed.data <- data.frame(matrix(0,nrow=nrow(windspeed.data.hrly),ncol=6))
+colnames(windspeed.data) <- c("date.time","windspd.site1","windspd.site2","windspd.site3","windspd.site4","windspd.site5")
+# put the data from windspeed.data.hrly to the new data frame
+windspeed.data$date.time <- windspeed.data.hrly$date.time
+for (i in 1:5) {
+  windspeed.data[,i+1] <- windspeed.data.hrly[i+2]
+}
+# View(windspeed.data)
+
+
+# extract the target windspeed data from 2011.01.07 to 2011.12.31
+## set time outside the range to NA
+windspeed.data$windspd.site1[which(windspeed.data$date.time < start.datetime | windspeed.data$date.time > end.datetime)] <- NA
+## omit all NAs
+windspeed.data <- na.omit(windspeed.data)
+row.names(windspeed.data) <- NULL
+write.csv(windspeed.data, file = "windspeed.data.csv")
+# View(windspeed.data)
+```
+
+3. Calculate wind generation data frame from the windspeed data and turbine power curve
+
+```{r}
+# create a new data frame for turbine generation at each site according to the turbine power curve
+windgen.data <- data.frame(matrix(0,nrow=nrow(windspeed.data),ncol=6))
+colnames(windgen.data) <- c("date.time","gen.site1.mw","gen.site2.mw","gen.site3.mw","gen.site4.mw","gen.site5.mw")
+
+# define the turbine power rate (Bonus wind turbines (B2000) rated at 2MW)
+tur.power.rate.per <- 2
+# import turbine power curve
+power.curve <- read.csv("turbine-power-curve-2mw.csv")
+# keep power curve only for wind speeds below cut out speed (25 m/s)
+power.curve <- power.curve[which(power.curve$windspeed_mps <= 25),]
+
+# get the function of the turbine power curve
+splinefun.power.curve <- splinefun(power.curve$windspeed_mps,power.curve$power_kW)
+# fill the wind generation data frame according to the power curve function
+windgen.data$date.time <- windspeed.data$date.time
+for (i in 2:6) {
+  windgen.data[,i] <- splinefun.power.curve(windspeed.data[,i])/1000
+}
+
+# Enrsure no power curve values are below zero or above maximum
+for (j in 2:6) {
+  windgen.data[,j][which(windgen.data[,j]<0)] <- 0
+  windgen.data[,j][which(windgen.data[,j] > tur.power.rate.per)] <- tur.power.rate.per
+}
+write.csv(windgen.data,file = "windgen.data.csv")
+# View(windgen.data)
+```
+
+4. Calculate uncurtailed capacity factor of each site
+
+```{r}
+# create a new data frame for capacity factors of wind sites
+windsites.cp <- data.frame(matrix(0,nrow=5,ncol=2))
+colnames(windsites.cp) <- c("windsites","uncur.cf")
+windsites.cp[,1] <- c("site1","site2","site3","site4","site5")
+
+# calcultate uncurtailed capacity factors for each site
+for (i in 1:5) {
+  windsites.cp[i,2] <- sum(windgen.data[,i+1])/(tur.power.rate.per*nrow(windgen.data))
+}
+windsites.cp
+# View(windsites.cp)
+```
+
+## 3. Process the solar data
+
+The potential power output of solar panels are calculated taking consider of the actual solar radiance and the temperature???s effect on panel???s efficiency. The panel we chose is from FS_Serie_3_EN, with the rated power of 65.6W. 
+
+1. Convert the demand load data from every 10 minutes to hourly.
+
+```{r}
+solar.data.raw<-read.csv("AntiguaSolar.csv")
+colnames(solar.data.raw) <- c("date_time","SolarAvg.w.m2","SolarSD.w.m2","SolarMax.w.m2","SolarMin.w.m2")
+solar.data.raw$date_time <- as.POSIXct(solar.data.raw$date_time, format = "%m/%d/%y %H:%M", tz = "UTC")
+```
+
+```{r}
+# put the raw data into a new data frame to keep the original one
+solar.data.orig <- solar.data.raw
+
+solar.data.orig$date <- as.Date(solar.data.orig$date_time)
+solar.data.orig$hour <- hour(solar.data.orig$date_time)
+# convert 10 mins' data into hourly data
+solar.data.hrly <- ddply(solar.data.orig,.(date,hour),.fun=summarise, solar.hrly.w.m2=sum(SolarAvg.w.m2)/6)
+# View(solar.data.hrly)
+# The first value is incorrect, because the first hour is not complete, only has 2 10min intervals. But it doesn't matter, we will not use it , we only use the data from Jan 7th to the end of 2011.
+
+# convert date and hour back to date.time
+solar.data.hrly$date.time <- as.POSIXct(paste(as.character(solar.data.hrly$date), as.character(solar.data.hrly$hour),sep = " "), format = "%Y-%m-%d %H", tz = "UTC")
+
+# create a new solar data frame
+solar.data <- data.frame(matrix(0,nrow=nrow(solar.data.hrly),ncol=2))
+colnames(solar.data) <- c("date.time","solar.irr.w.m2")
+# put the data from solar.data.hrly to the new data frame
+solar.data$date.time <- solar.data.hrly$date.time
+solar.data$solar.irr.w.m2 <- solar.data.hrly$solar.hrly.w.m2
+```
+
+2. Extract data from 2011-01-07 00:00 to 2011-12-31 23:00.
+
+```{r}
+# extract the target demand data from 2011.01.07 to 2011.12.31
+## set time outside the range to NA
+solar.data$solar.irr.w.m2[which(solar.data$date.time < start.datetime | solar.data$date.time > end.datetime)] <- NA
+## omit all NAs
+solar.data <- na.omit(solar.data)
+row.names(solar.data) <- NULL
+# View(solar.data)
+```
+
+3. Proecess temperature data
+
+```{r}
+# we assume we have a [90W solar panel] (20110901_DB_FS_Serie_3_EN.pdf) (Model FS-387)
+# from the manufacturer's literature we know the panel is 0.72 m^2. 
+# load in the temperature data
+temp.data.raw <- read.csv("AntiguaTemp.csv")
+area.panel.m2 <- 0.72
+
+colnames(temp.data.raw) <- c("date_time","TempAvg.C","TempSD.C","TempMax.C","TempMin.C")
+
+#convert time stamp
+temp.data.raw$date_time <- as.POSIXct(temp.data.raw$date_time, format = "%m/%d/%y %H:%M", tz = "UTC")
+
+# put the raw data into a new data frame to keep the original one
+temp.data.orig <- temp.data.raw
+# View(temp.data.orig)
+```
+
+```{r}
+# extract date and hour and put into new columnes
+temp.data.orig$date <- as.Date(temp.data.orig$date_time)
+temp.data.orig$hour <- hour(temp.data.orig$date_time)
+# convert 10 mins' data into hourly data
+temp.data.hrly <- ddply(temp.data.orig,.(date,hour),.fun=summarise, temp.hrly.c=sum(TempAvg.C)/6)
+# View(temp.data.hrly)
+# The first value is incorrect, because the first hour is not complete, only has 2 10min intervals. But it doesn't matter, we will not use it , we only use the data from Jan 7th to the end of 2011.
+
+# convert date and hour back to date.time
+temp.data.hrly$date.time <- as.POSIXct(paste(as.character(temp.data.hrly$date), as.character(temp.data.hrly$hour),sep = " "), format = "%Y-%m-%d %H", tz = "UTC")
+# View(temp.data.hrly)
+
+# create a new temp data frame
+temp.data <- data.frame(matrix(0,nrow=nrow(temp.data.hrly),ncol=2))
+colnames(temp.data) <- c("date.time","temp.avg.c")
+# put the data from temp.data.hrly to the new data frame
+temp.data$date.time <- temp.data.hrly$date.time
+temp.data$temp.avg.c <- temp.data.hrly$temp.hrly.c
+```
+
+```{r}
+# extract the target data from 2011.01.07 to 2011.12.31
+## set time outside the range to NA
+temp.data$temp.avg.c[which(temp.data$date.time < start.datetime | temp.data$date.time > end.datetime)] <- NA
+## omit all NAs
+temp.data <- na.omit(temp.data)
+row.names(temp.data) <- NULL
+
+# View(temp.data)
+```
+
+```{r}
+# from Joe's "Lecture - Sizing Combined PV-Battery Systems", and the Electrical Specifications of "First Solar?? FS Series 3??? PV Module", We choose, FS-387, Temperature Coefficient of PMPP TK(PMPP) -0.25%/??C, which means the max power output reduces as the cell temperature rises.
+# calculate the cell temperature first????? the unit of G??????? kw/m2?
+temp.data$temp.cell <- temp.data$temp.avg.c+((45-20)/0.8)*solar.data$solar.irr.w.m2/1000
+write.csv(temp.data,file="temp.data.csv")
+# MODEL NUMBERS, FS-387, AND RATINGS AT 800W/m2, NOCT, 45??C, AM 1.5*
+power.nominal.w <- 65.6
+# temperature Coefficient of nominal power is 0.0025
+power.max.actual.w <- power.nominal.w*(1-(temp.data$temp.cell-45)*0.0025)
+
+# add the actual power of a solar panel as a column to solar.data
+solar.data$actual.power.max.per.panel.w <- power.max.actual.w
+```
+
+```{r}
+# calculate the PSH = Peak sun hours, that is the equivalent time at 800W/h
+solar.PSH <- solar.data$solar.irr.w.m2/800
+solar.power.per.panel.w <- solar.PSH*power.max.actual.w
+solar.data$solar.power.per.panel.mw <- solar.power.per.panel.w/1000000
+write.csv(solar.data,file = "solar.data.csv")
+# View(solar.data)
+```
+
+```{r}
+# Calculate overall uncurtailed solar capacity factor
+cf.solar.uncurtailed <- sum(solar.power.per.panel.w)/(nrow(solar.data)*power.nominal.w)
+print(paste("uncurtailed solar capacity factor = ", cf.solar.uncurtailed))
+```
+
+
+# Application of Constant Baseload Generation
+
+## 1. Assume a constant diesel baseload generation to estimate turbine and solar panel numbers.
+
+We are doing research to find the solution for Antigua electricity supply. Basically, we assumed the penetration level of renewable energies including wind and solar to be around 20% of the total demand. The share of solar energy in renewables to be 10%. With that assumption of each site can install up to 10 turbines, we assign the turbines based on the order of uncurtail capacity factor. The number of solar panels would be the rest of the renewable share. 
+
+```{r}
+# features of the demand
+print(paste("mean demand (MW) = ", mean(demand.data$demand.mw)))
+print(paste("maximum demand (MW) = ", max(demand.data$demand.mw)))
+print(paste("minimum demand (MW) = ", min(demand.data$demand.mw)))
+
+# assume constant baseload to be 30~35 MW
+baseload.mw <- 30
+# solar share in the renewables is 10%
+solar.share <- 0.1
+# suppose the inflated ratio of supply capacity to demand capacity is 16%
+infla.ratio <- 0.16
+print(paste("baseload (MW) = ", baseload.mw))
+print(paste("solar share = ", solar.share))
+print(paste("infla ratio = ", infla.ratio))
+
+# calculate annual potential per wind turbine (choose wind site 3)
+anu.wind.poten.per.1 <- sum(windgen.data$gen.site1.mw)
+anu.wind.poten.per.2 <- sum(windgen.data$gen.site2.mw)
+anu.wind.poten.per.3 <- sum(windgen.data$gen.site3.mw)
+
+# calculate annual potential per solar panel
+anu.solar.poten.per <- sum(solar.data$solar.power.per.panel.mw)
+print(paste("annual solar potential (MW) per panel = ", anu.solar.poten.per))
+
+
+# renewable potential of a year, to estimate th number of turbines and panels
+renew.poten.sum <- sum(demand.data$demand.mw)*(1+infla.ratio)-baseload.mw*nrow(demand.data)
+print(paste("annual renewable potential (MW) = ", renew.poten.sum))
+
+portion.renewable <- renew.poten.sum/sum(demand.data$demand.mw)
+print(paste("ratio of renewable = ", portion.renewable))
+
+# estimate turbine numbers if wind takes 90% of all renewables and solar takes 10%
+num.turbine <- round(renew.poten.sum/anu.wind.poten.per.1*(1-solar.share))
+print(paste("number of turbines = ", num.turbine))
+
+if (num.turbine > 10 & num.turbine < 20) {
+  num.turbine.3 <- 10
+  num.turbine.1 <- num.turbine-10
+  num.turbine.2 <- 0
+} else {
+  if (num.turbine > 20) {
+    num.turbine.3 <- 10
+    num.turbine.1 <- 10
+    num.turbine.2 <- num.turbine-20
+  } else {
+    num.turbine.3 <- num.turbine
+    num.turbine.1 <- 0
+    num.turbine.2 <- 0
+  }
+}
+
+print(paste("number of turbines at site1 = ", num.turbine.1))
+print(paste("number of turbines at site2 = ", num.turbine.2))
+print(paste("number of turbines at site3 = ", num.turbine.3))
+
+# calculate number of solar panels
+num.panel <- round((renew.poten.sum-anu.wind.poten.per.1*num.turbine.1-anu.wind.poten.per.2*num.turbine.2-anu.wind.poten.per.3*num.turbine.3)/anu.solar.poten.per)
+print(paste("number of solar panels = ", num.panel))
+
+#Total renewable installation per year mw
+n.hour<-dim(demand.data)[1]
+renew.anu.install<-(num.panel*power.nominal.w/1000000 + num.turbine*tur.power.rate.per)*n.hour
+
+
+```
+
+## 2. Features before setting
+
+### 2.1 Hourly demand and grid potential over a year 
+
+```{r}
+demand.supply.hrly <- data.frame(matrix(0,nrow=nrow(demand.data),ncol=7))
+colnames(demand.supply.hrly) <- c("date.time", "demand.mw","baseload.mw","wind.poten.mw","solar.poten.mw","renew.poten.mw","grid.poten.mw")
+demand.supply.hrly$date.time <- demand.data$date.time
+demand.supply.hrly$demand.mw <- demand.data$demand.mw
+demand.supply.hrly$baseload.mw <- baseload.mw
+demand.supply.hrly$wind.poten.mw <- windgen.data$gen.site1.mw*num.turbine.1+windgen.data$gen.site2.mw*num.turbine.2+windgen.data$gen.site3.mw*num.turbine.3
+demand.supply.hrly$solar.poten.mw <- solar.data$solar.power.per.panel.mw*num.panel
+demand.supply.hrly$renew.poten.mw <- demand.supply.hrly$wind.poten.mw+demand.supply.hrly$solar.poten.mw
+demand.supply.hrly$grid.poten.mw <- baseload.mw+demand.supply.hrly$renew.poten.mw
+demand.supply.hrly$baseload.supply.mw <- pmin(demand.supply.hrly$demand.mw,demand.supply.hrly$baseload.mw)
+#demand.supply.hrly$consume.mw <- pmin(demand.supply.hrly$demand.mw, demand.supply.hrly$grid.poten.mw)
+
+#consume=actual.supply
+demand.supply.hrly$actual.supply.mw <-pmin(demand.supply.hrly$demand.mw,demand.supply.hrly$grid.poten.mw)
+demand.supply.hrly$renew.supply.mw <- demand.supply.hrly$actual.supply.mw - demand.supply.hrly$baseload.supply.mw
+sum(demand.supply.hrly$renew.supply.mw)
+
+
+demand.supply.hrly$unmet.mw <- ifelse(demand.supply.hrly$demand.mw- demand.supply.hrly$actual.supply.mw>0, demand.supply.hrly$demand.mw- demand.supply.hrly$actual.supply.mw, 0)
+sum(demand.supply.hrly$unmet.mw)
+sum(demand.supply.hrly$unmet.mw!=0)
+hist(demand.supply.hrly$unmet.mw)
+mean(demand.supply.hrly$unmet.mw)
+max(demand.supply.hrly$unmet.mw)
+sum(demand.supply.hrly$unmet.mw>10)
+
+demand.supply.hrly$spill.mw<-demand.supply.hrly$grid.poten.mw - demand.supply.hrly$actual.supply.mw
+max(demand.supply.hrly$spill.mw)
+sum(demand.supply.hrly$spill.mw)
+hist(demand.supply.hrly$spill.mw)
+sum(demand.supply.hrly$spill.mw<20)/length(demand.supply.hrly$spill.mw)
+
+
+demand.supply.hrly$discrep.mw <- demand.supply.hrly$demand.mw - demand.supply.hrly$grid.poten.mw
+```
+
+
+```{r}
+# plot the hourly demand and supply
+ggplot(demand.supply.hrly, aes(x=demand.supply.hrly$date.time)) + 
+    geom_line(aes(y=demand.supply.hrly$demand.mw,color="demand")) +
+    geom_line(aes(y=demand.supply.hrly$baseload.mw,color="baseload")) +
+    geom_line(aes(y=demand.supply.hrly$grid.poten.mw,color="grid potential")) +
+    ylab("MW") + 
+    xlab("time") +
+    labs(title="Hourly demand and grid supply before settings") + 
+    theme_classic() +
+    theme(legend.position="bottom",legend.title=element_blank())
+```
+
+Involving Energy Storage
+```{r}
+#write.csv(demand.supply.hrly, file = "base30.noset.nostor.data.csv")
+base30.noset.stor.data<- read.csv("base30.noset.nostor.data.csv")
+
+# assume a storage capacity of 50 MWh
+stor.cap.mwh <- 50
+# assume the initial storage is 0
+stor.init.mwh <- 0
+
+
+#Set the efficiency of the motor and generater, and the isentropic 
+miu.motor <- 0.95
+miu.comp.is <- 0.8
+miu.gen <- 0.97
+miu.trub.is <- 0.8
+
+# to develop a 'for' loop, we'll add columns to our data frame for the amount of energy stored in the pumped hydro system at the start and end of each time step
+
+
+base30.noset.stor.data$stor.start.mwh <- 0
+base30.noset.stor.data$stor.end.mwh <- 0
+
+# use for loop to determine energy stored at the start and end of every hour
+for (h in 1:nrow(base30.noset.stor.data)) {
+  base30.noset.stor.data$stor.start.mwh[h] <- ifelse(h == 1, stor.init.mwh, base30.noset.stor.data$stor.end.mwh[h-1])
+  
+  base30.noset.stor.data$stor.end.mwh[h] <- ifelse(base30.noset.stor.data$spill.mw[h] > 0, min(base30.noset.stor.data$stor.start.mwh[h]+base30.noset.stor.data$spill.mw[h]*miu.motor*miu.comp.is, stor.cap.mwh), max(base30.noset.stor.data$stor.start.mwh[h]-base30.noset.stor.data$unmet.mw[h]/(miu.gen*miu.trub.is), 0))
+  
+base30.noset.stor.data$stor.supply.mw[h] <- ifelse(base30.noset.stor.data$stor.start.mwh[h]-base30.noset.stor.data$stor.end.mwh[h] > 0, (base30.noset.stor.data$stor.start.mwh[h]-base30.noset.stor.data$stor.end.mwh[h])*miu.gen*miu.trub.is, 0)
+}
+sum(base30.noset.stor.data$stor.supply.mw)
+max(base30.noset.stor.data$stor.supply.mw)
+
+base30.noset.stor.data$consume.withstor.mw <- noset.stor.data$actual.supply.mw + noset.stor.data$stor.supply.mw
+sum(noset.stor.data$consume.withstor.mw)
+
+#See what we've achieved through storage:
+noset.stor.data$unmet.new.mw <- ifelse(noset.stor.data$demand.mw - noset.stor.data$consume.withstor.mw>0, noset.stor.data$demand.mw - noset.stor.data$consume.withstor.mw, 0)
+sum(noset.stor.data$unmet.new.mw)
+sum(noset.stor.data$unmet.new.mw!=0)
+max(noset.stor.data$unmet.new.mw)
+mean(noset.stor.data$unmet.new.mw)
+sum(noset.stor.data$unmet.new.mw>10)
+hist(noset.stor.data$unmet.new.mw)
+sum(demand.supply.hrly$unmet.mw>10)
+
+noset.stor.data$renew.supply.mw<-rep(0,length(noset.stor.data$unmet.new.mw))
+noset.stor.data$renew.supply.mw<-noset.stor.data$consume.withstor.mw - noset.stor.data$baseload.supply.mw
+#noset.stor.data$consume.withstor.mw = total supply.mw
+sum(noset.stor.data$renew.supply.mw)
+
+```
+
+
+UW-CAES
+```{r}
+#relate the total power to mass
+# Ambient Conditions
+  T.0 = 298 # K, ambient temperature.
+  P.0 = 101300 # Pa, ambient pressure.
+  R = 287 # J / kg-K , specific gas constant for DRY air.
+  Cp = 3.5*R # Heat capacity, constant pressure.
+  Cv = 2.5*R # Heat capacity, constant volume.
+  k = Cp / Cv # Adiabatic index, dimensionless.
+
+# Chamber Storage Parameters
+  h.bag = 500 #m, depth of the UW-CAES system.
+  r.bag = 2.5 #m, radius of the UW-CAES system.
+  V.bag = (4/3)*pi*r.bag^3 # m^3, maximum volume capacity as described by the bag.
+
+# Seawater conditions
+  P.sea = h.bag*10000 # Pa, seawater hydrostatic head
+  T.sea = 277 # K, ambient seawater temperature. Assuming that depth range is where the thermocline has reached its relatively constant value of 4??C.
+```
+
+## Case 1 - Single Compressor, Single Turbine, Single Heat Exchanger ##
+
+As a first case scenario, let's assume we have a **simple approximation of a CAES system** - a single turbine on one side, and a compressor on the other. We'll also add a heat exchanger on the compressor side so we can control what we deliver into the chamber... What kind of things will we see?
+
+### Charging Process ###
+
+We will now describe our process as follows:
+
+1. A single-stage, **adiabatic, reversible compression** of gas from ambient conditions ($P_0$,$T_0$) to *ending pressure* ($P_{sea}$), and some temperature $T_1$.
+2. **Isobaric cooling** of the gas from $T_1$ to seawater temperature, $T_{sea}$. Unless the gas is first cooled to the ending temperature, we cannot fully fill the bag to max volume as it will cool down (and contract) after filling, due to heat loss.
+3. The chamber will now contain some mass of air $m_{max}$, which is defined by the bag's volume, local pressure (which cannot exceed hydrostatic pressure or it will not contract), and seawater temperature.
+
+``` {r Defining Full Bag Mass, echo=FALSE}
+
+m.max  = P.sea*V.bag/(R*T.sea)
+
+print(paste("The max storage mass of the given bag size is ",round(m.max,2),"kg.",sep=""))
+
+```
+
+---
+
+#### Calculating The Steps ####
+
+For **adiabatic, reversible (isentropic) processes**, the temperature/pressure dependence can be described as:
+
+$$\frac{T_1}{T_0} = \bigg(\frac{P_1}{P_0}\bigg)^{\frac{k-1}{k}}\qquad[1]$$
+
+Since we know the starting temperature and desired pressure difference in the first compressor, we can apply this equation to find the temperature exiting the compressor.
+
+``` {r Calculating Temperature After Compressor A, echo=FALSE}
+
+T.1 = T.0 * (P.sea/P.0)^((k-1)/k)
+
+print(paste("The temperature after the first compressor is ",round(T.1,2),"K.",sep=""))
+
+```
+
+That's pretty hot!
+
+The **total work** from that compressor is described as:
+
+$$W_{compressor} = m_{in}*c_p*(T_1-T_0)\qquad[2]$$
+
+``` {r Calculating Work of Compressor A, echo=FALSE}
+
+W.comp.A = m.max * Cp * (T.1 - T.0)
+W.comp.A.kWh = W.comp.A/3.6e6
+
+print(paste("The total work of the first compressor to completely fill the bag is ",round(W.comp.A.kWh,2),"kWh.",sep=""))
+
+```
+
+---
+
+To accomplish step 2 and find **the heat removed in the isobaric heat exchanger**, we simply use the heat capacity of the gas and the desired temperature drop (from $T_1$ to $T_{sea}$):
+
+$$Q_{exchanger} = m_{in}*c_p*(T_{sea}-T_1)\qquad[3]$$
+
+``` {r Calculating Heat of Exchanger A, echo=FALSE}
+
+Q.exch.B = m.max * Cp * (T.sea - T.1)
+Q.exch.B.kWh = Q.exch.B /3.6e6
+
+print(paste("The total heat exchanger requirement is ",round(Q.exch.B,2),"J, or ",round(Q.exch.B.kWh,2),"kWh.",sep=""))
+
+```
+
+Note that if we simply do not insulate our connecting lines between the compressor and the chamber then this effect still occurs but is 
+
+---
+
+### Discharging Process ###
+
+Discharging the storage takes on a similar form to Equations 1 and 2, but with a starting temperature of $T_{sea}$, starting pressure of $P_{sea}$, and terminating pressure of {$P_0$}. We calculate the terminating temperature $T_2$. To begin with, we assume no heat exchanger on the turbine end, just to see our results here.
+
+#### Calculating The Steps ####
+
+The **adiabatic, reversible expansion** occurs identically to the compressor:
+
+$$\frac{T_2}{T_{sea}} = \bigg(\frac{P_0}{P_{sea}}\bigg)^{\frac{k-1}{k}}\qquad[4]$$
+
+$$W_{turbine} = m_{in}*c_p*(T_2-T_{sea})\qquad[5]$$
+
+``` {r Calculating Temperature After Turbine C, echo=FALSE}
+
+T.2 = T.sea * (P.0/P.sea)^((k-1)/k)
+
+print(paste("The temperature after the first turbine is ",round(T.2,2),"K.",sep=""))
+
+```
+
+``` {r Calculating Work of Turbine C, echo=FALSE}
+
+W.turb.C = m.max * Cp * (T.2 - T.sea)
+W.turb.C.kWh = W.turb.C/3.6e6
+
+print(paste("The total work performed by a full discharge of the bag is ",round(W.turb.C.kWh,2),"kWh.",sep=""))
+
+```
+
+Now we're talking super cold!
+
+---
+
+### Overall Process Efficiency ###
+
+The **overall efficiency** of the process is best defined as the **ratio of the absolute value of the turbine-generated power and the energy requirement of the compressor. So, filling up the bag we get the following:
+
+$$\eta = \frac{|W_{turbine}|}{W_{compressor}}\qquad[6]$$
+
+``` {r Calcualtion of the Overall Efficiency, echo=FALSE}
+
+case.1.efficiency = abs(W.turb.C)/W.comp.A
+
+print(paste("The total efficiency of this system is ",round(case.1.efficiency*100,2),"%.",sep=""))
+
+```
+
+This efficiency **ignores the energy requirements to run any heat exchangers.**
+
+Applying the explicit definitions for turbine and compressor work into Equation 6, we can define the efficiency in terms of the temperatures.
+
+$$\eta = \frac{|W_{turbine}|}{W_{compressor}} = \frac{T_{sea}\bigg(\bigg(\frac{P_0}{P_{sea}}\bigg)^{\frac{k-1}{k}}-1\bigg)}{T_0\bigg(\bigg(\frac{P_{sea}}{P_0}\bigg)^{\frac{k-1}{k}}-1\bigg)}\qquad[7]$$
+
+We can run a range of depth ranges using the above equations and derive some dependences of 
+
+``` {r Case 1 Depth Range, echo = FALSE, fig.align='center',fig.width=10, fig.height=5}
+h.bag.range = seq(100,3000,10)
+P.sea.range = h.bag.range*10000
+case.1.efficiency.b = rep(0,length(h.bag.range))
+case.1.W.turb.C = rep(0,length(h.bag.range))
+
+for (x in 1:length(P.sea.range))
+  {
+    case.1.W.turb.C[x] = m.max*Cp*(T.sea * ((P.0/P.sea.range[x])^((k-1)/k) - 1))
+    case.1.efficiency.b[x]  = abs(T.sea * ((P.0/P.sea.range[x])^((k-1)/k) - 1)) / (T.0 * ((P.sea.range[x]/P.0)^((k-1)/k) - 1))
+  }
+
+case.1.plot.efficiency.vs.depth = ggplot() +
+  geom_line(aes(x=h.bag.range,y=case.1.efficiency.b) +
+  xlab("Chamber Depth") +
+  ylab(expression(paste("Storage Efficiency, ",eta))) +
+  #ggtitle("Storage Efficiency\nCase 1: Single Compressor/Turbine and Heat Exchanger")
+  ggtitle("a")
+
+case.1.plot.turbine.power.vs.depth = ggplot() +
+  geom_line(aes(x=h.bag.range,y=abs(case.1.W.turb.C/3.6e6))) +
+  xlab("Chamber Depth") +
+  ylab("Stored Energy, kWh") +
+  ggtitle("Complete Energy Discharge\nCase 1: Single Compressor/Turbine and Heat Exchanger")
+
+case.1.plot.efficiency.vs.depth
+case.1.plot.turbine.power.vs.depth
+
+```
+
+Two stages, Charging side. cool down the temperature before each compresser to T0.
+
+``` {r Case 2:  Two-stage Compressors, fig.align='center',fig.width=10, fig.height=5}
+
+case.2.split = seq(0,49,1)    #Bar = 100000Pa
+stage.1.T1 = rep(0,length(case.2.split))
+stage.1.W = rep(0,length(case.2.split))
+stage.2.T2 = rep(0,length(case.2.split))
+stage.2.W = rep(0,length(case.2.split))
+stage.1.2.Q = rep(0,length(case.2.split))
+stage.1.Q = rep(0,length(case.2.split))
+stage.2.Q = rep(0,length(case.2.split))
+
+for (x in 1:length(case.2.split))
+{
+  stage.1.T1[x] = T.0*((P.sea-case.2.split[x]*100000)/P.0)^((k-1)/k)
+  stage.1.W[x] = m.max*Cp*(stage.1.T1[x]-T.0)
+  
+  stage.2.T2[x] = T.0*(P.sea/(P.sea-case.2.split[x]*100000))^((k-1)/k)
+  stage.2.W[x] = m.max*Cp*(stage.2.T2[x]-T.0)
+  
+  stage.1.Q[x] = m.max*Cp*(T.0 - stage.1.T1[x])  
+  stage.2.Q[x] = m.max*Cp*(T.sea-stage.2.T2[x])
+}
+
+#total work done by the compressor
+case.2.total.comp.W = abs(stage.1.W + stage.2.W)/3.6e6
+#total heat of the first 2 stage
+stage.1.2.Q = abs(stage.1.Q + stage.2.Q)
+
+case.2.plot.total.W.vs.comp.split = ggplot() +
+  geom_line(aes(x = P.sea/100000-case.2.split, y = case.2.total.comp.W/3.6e6)) +
+  xlab("Pressure between Compressor A and B") +
+  ylab("Total compressor work, kWh") +
+  scale_y_continuous(limits = c(0, NA))
+
+case.2.plot.total.W.vs.comp.split
+
+#pressure drop distribution that has min compressor work
+index.c = which( case.2.total.comp.W == min(case.2.total.comp.W))
+case.2.split[index.c]
+#pressure distribution
+stage.1.P1 = P.sea - case.2.split[index.c]*100000
+stage.1.P1
+
+#temperature of each stage
+stage.1.T1[index.c]
+stage.2.T2[index.c]
+
+##total compressor work and Q
+case.2.total.comp.W<-case.2.total.comp.W[index.c]
+stage.1.2.Q[index.c]/36e5
+
+stage.1.W[index.c]/36e5
+stage.2.W[index.c]/36e5
+
+stage.1.Q[index.c]/36e5
+stage.2.Q[index.c]/36e5
+
+```
+
+
+
+# 100% thermal recovery Q1= Q4, Q2=Q3
+```{r}
+T.recover.3 = rep(0,length(case.2.split))
+stage.3.T3 = rep(0,length(case.2.split))
+stage.3.W = rep(0,length(case.2.split))
+stage.3.Q = rep(abs(stage.2.Q[index.c]),length(case.2.split))
+
+T.recover.4 = rep(0,length(case.2.split))
+stage.4.T4 = rep(0,length(case.2.split))
+stage.4.W = rep(0,length(case.2.split))
+stage.4.Q = rep(abs(stage.1.Q[index.c]),length(case.2.split))
+
+for (x in 1:length(case.2.split))
+{
+  T.recover.3[x] = min(stage.3.Q[x]/(m.max*Cp)+T.sea,stage.2.T2[index.c])
+  stage.3.T3[x] = T.recover.3[x]*((P.sea-case.2.split[x]*100000)/P.sea)^((k-1)/k)
+  stage.3.W[x] = m.max*Cp*(stage.3.T3[x]-T.recover.3[x])
+  
+  T.recover.4[x] = min(stage.4.Q[x]/(m.max*Cp)+stage.3.T3[x],stage.1.T1[index.c])
+  stage.4.T4[x] = T.recover.4[x]*(P.0/(P.sea-case.2.split[x]*100000))^((k-1)/k)
+  stage.4.W[x] = m.max*Cp*(stage.4.T4[x]-T.recover.4[x])
+}
+
+case.2.total.turb.W = abs(stage.3.W + stage.4.W)
+
+case.2.plot.total.W.vs.turb.split = ggplot() +
+  geom_line(aes(x = P.sea/100000-case.2.split, y = case.2.total.turb.W/3.6e6)) +
+  xlab("Pressure between Turbine C and D") +
+  ylab("Total turbine work, kWh") +
+  scale_y_continuous(limits = c(0, NA))
+
+case.2.plot.total.W.vs.turb.split
+
+miu.motor <- 0.95
+miu.comp.is <- 0.8
+miu.gen <- 0.97
+miu.trub.is <- 0.8
+
+index.t <- which(case.2.total.turb.W == max(case.2.total.turb.W))
+#pressure distribution
+stage.3.P3 <- P.sea-case.2.split[index.t]*100000
+stage.3.P3
+#temperature of each stage
+stage.4.T4[index.t]
+T.recover.3[index.t]
+T.recover.4[index.t]
+stage.3.T3[index.t]
+
+#total turbine work and Q (unit is kwh)
+case.2.total.turb.W <- abs(stage.3.W[index.t]+stage.4.W[index.t])/3.6e6
+stage.3.4.Q <- (stage.3.Q[index.t] + stage.4.Q[index.t])/3.6e6
+
+stage.3.Q[index.t]/3.6e6
+stage.4.Q[index.t]/3.6e6
+stage.3.W[index.t]/3.6e6
+stage.4.W[index.t]/3.6e6
+
+#actual eff, miu
+miu<-(abs(stage.3.W[index.t]+stage.4.W[index.t])*miu.gen*miu.trub.is/(abs(stage.1.W[index.c]+stage.2.W[index.c])/miu.motor/miu.comp.is))
+miu
+#ideal eff, miu.ideal
+(abs(stage.3.W[index.t]+stage.4.W[index.t])/(abs(stage.1.W[index.c]+stage.2.W[index.c])))
+
+```
+
+```{r}
+#storage capacity of one bag, the actual power output you can get from depleting a fully charged bag.
+case.2.total.turb.W*miu.gen*miu.trub.is
+num.bag <- stor.cap.mwh*1000/(case.2.total.turb.W)
+num.bag
+
+#discharge.kw.per.bag <- unmet.max.set12*1000/num.bag
+#portion of discharge mass to fully charged mass devided by 3600s
+#m.rate.kg.s.per <- m.max*discharge.kw.per.bag/((case.2.total.turb.W)*3600)
+#m.rate.kg.s <- m.rate.kg.s.per*num.bag
+```
+
+```{r,tracking for every hour, discharging side}
+#hourly discharge power = storage.supply
+noset.stor.data$discharge.mw <- ifelse(noset.stor.data$stor.start.mwh - noset.stor.data$stor.end.mwh>0, miu.trub.is*miu.gen*(noset.stor.data$stor.start.mwh - noset.stor.data$stor.end.mwh),0)
+
+sum(noset.stor.data$discharge.mw!=noset.stor.data$stor.supply.mw)
+sum(noset.stor.data$discharge.mw==0)
+sum(noset.stor.data$stor.supply.mw==0)
+sum(noset.stor.data$discharge.mw!=0)
+sum(noset.stor.data$unmet.mw<=noset.stor.data$stor.supply.mw)
+
+#maximum discharging power
+max(noset.stor.data$discharge.mw)
+max(noset.stor.data$stor.supply.mw)
+
+#horly air flow rate
+noset.stor.data$discharge.kg.s <- m.max*(noset.stor.data$discharge.mw*1000/(miu.trub.is*miu.gen*case.2.total.turb.W*3600))
+#maximum discharing flow rate
+max(noset.stor.data$discharge.kg.s)
+max.air.flow.discharge.per.bag<- max(noset.stor.data$discharge.kg.s)/num.bag
+max.air.flow.discharge.per.bag
+```
+
+```{r, charging side}
+#tracking the actual charge into the air bags
+
+noset.stor.data$charge.mw <- ifelse(noset.stor.data$stor.end.mwh - noset.stor.data$stor.start.mwh>0, (noset.stor.data$stor.end.mwh-noset.stor.data$stor.start.mwh)/(miu.motor*miu.comp.is), 0)
+
+#maximum charging power
+max(noset.stor.data$charge.mw)
+sum(noset.stor.data$charge.mw)
+
+#hourly air flow rate
+noset.stor.data$charge.kg.s <- m.max*(noset.stor.data$charge.mw*1000/(miu.motor*miu.comp.is*case.2.total.comp.W*3600))
+max(noset.stor.data$charge.kg.s)
+#maximum charge flow rate 
+max.air.flow.charge.per.bag<- max(noset.stor.data$charge.kg.s)/num.bag
+max.air.flow.charge.per.bag
+```
+
+```{r}
+#Tracking the volume of the air inside each of the bag
+storage.vol.noset.base30 = noset.stor.data$stor.end.mwh*(V.bag*num.bag)/50
+range(storage.vol.noset.base30)
+mean(storage.vol.noset.base30)
+sum(storage.vol.noset.base30==0)
+sum(storage.vol.noset.base30==max(storage.vol.noset.base30))
+plot(storage.vol.noset.base30, type="l")
+hist(storage.vol.noset.base30)
+```
+
+```{r}
+#set up a data frame for per bag
+unit.bag <- noset.stor.data[c("discharge.mw","discharge.kg.s","charge.mw","charge.kg.s")]/num.bag
+unit.bag <- cbind(noset.stor.data[c("date.time")],unit.bag)
+```
+
+```{r}
+##hourly heat load per bag
+unit.bag$q1.kw <- Cp*unit.bag$charge.kg.s* (T.0-stage.1.T1[index.c])/1000
+unit.bag$q2.kw <- Cp*unit.bag$charge.kg.s* (T.sea-stage.2.T2[index.c])/1000
+unit.bag$q3.kw <- Cp*unit.bag$discharge.kg.s* (T.recover.3[index.t]-T.sea)/1000
+unit.bag$q4.kw <- Cp*unit.bag$discharge.kg.s* (T.recover.4[index.t]-stage.3.T3[index.t])/1000
+
+#hourly turbine work and compressor work per bag
+unit.bag$w1.kw<-unit.bag$charge.kg.s*stage.1.W[index.c]/(m.max*1000*miu.motor*miu.comp.is)
+unit.bag$w2.kw<-unit.bag$charge.kg.s*stage.2.W[index.c]/(m.max*1000*miu.motor*miu.comp.is)
+unit.bag$w3.kw<-unit.bag$discharge.kg.s*stage.3.W[index.c]*(miu.gen*miu.trub.is)/(m.max*1000)
+unit.bag$w4.kw<-unit.bag$discharge.kg.s*stage.4.W[index.c]*(miu.gen*miu.trub.is)/(m.max*1000)
+
+#Idealy
+#unit.bag$w1.kw<-unit.bag$charge.kg.s*stage.1.W[index.c]/(m.max*1000)
+#unit.bag$w2.kw<-unit.bag$charge.kg.s*stage.2.W[index.c]/(m.max*1000)
+#unit.bag$w3.kw<-unit.bag$discharge.kg.s*stage.3.W[index.c]/(m.max*1000)
+#unit.bag$w4.kw<-unit.bag$discharge.kg.s*stage.4.W[index.c]/(m.max*1000)
+
+#yearly perspective
+#the total amount of heat we get
+(sum(unit.bag$q1.kw)+ sum(unit.bag$q2.kw))*num.bag/1000
+#the total amount of heat we need
+(sum(unit.bag$q3.kw) +sum(unit.bag$q4.kw))*num.bag/1000
+#the total amount of work we put in 
+(sum(unit.bag$w1.kw) +sum(unit.bag$w2.kw))*num.bag/1000
+#the total amount of work we get out
+(sum(unit.bag$w3.kw) +sum(unit.bag$w4.kw))*num.bag/1000
+#Idealy(set q1=q4, q2=q3 for each hour), the yearly efficiency 
+miu.annual<-abs(sum(unit.bag$w3.kw) +sum(unit.bag$w4.kw))/(sum(unit.bag$w1.kw) +sum(unit.bag$w2.kw))
+miu.annual
+
+```
+
+Now we want to track the temperature of the thermal energy storage(concrete) for every hour
+```{r}
+#We have to look at all bags together regarding to heat analysis
+bags<-unit.bag[,2:13]*num.bag
+
+#Silicone oil  density at25 is,  965 - 980 kg/m3
+#The fluid can be used between -40C ~280 C
+
+rou.oil<-965 #kg m???3 Polydimethylsiloxane
+Cp.oil<-1600  #j/(kg*k)
+
+#rou.oil<-570  #kg/m3
+#Cp.oil<-1260 #j/(kg*k)
+
+#Give it a shorter name for our fixed temperatures
+T1<-stage.1.T1[index.c]
+T2<-stage.2.T2[index.c]
+T3<-T.recover.3[index.t]
+T4<-stage.3.T3[index.t]
+T5<-T.recover.4[index.t]
+T6<-stage.4.T4[index.t]
+#We use capital letter with air temperature, lowercase letter with fluid.
+
+#The inlet temperature of the first HEX
+#Propose a series of efficcacy of heat exchangers.
+effec<-seq(0.5,1,0.05)
+t.oil.1<-rep(0,length(effec))
+for (i in 1:length(effec)){
+  t.oil.1<-T1-((T1-T.0)/effec)
+}
+t.oil.1
+#We kind of have to choose an effecacy of 0.8 to ensure the temperature is within the range (-40C-280C, i.e, 233K- 553K)
+t1<-t.oil.1[7]
+t1
+
+
+t.oil.2<-rep(0,length(effec))
+for (i in 1:length(effec)){
+  t.oil.2<-((T5-T4)/effec)+T4
+}
+#We kind of have to choose an effecacy of 0.8 to ensure the temperature is within the range (-40C-280C, i.e, 233K- 553K)
+t2<-t.oil.2[7]
+t2
+
+t.oil.3<-rep(0,length(effec))
+for (i in 1:length(effec)){
+  t.oil.3<-T2-((T2-T.sea)/effec)
+}
+t.oil.3
+t3<-t.oil.3[7]
+t3
+
+
+t.oil.4<-rep(0,length(effec))
+for (i in 1:length(effec)){
+  t.oil.4<-((T3-T.sea)/effec)+T.sea
+}
+t.oil.4
+t4<-t.oil.4[7]
+t4
+
+#data frame containing the heatload of the fluid, assuming 90% efficiency
+#Heatload is negative when the bags are charged.
+effi<-0.9
+heatload.fluid.kw<-bags[,5:8]/effi
+m.oil$m1.oil.kg.s<-heatload.fluid.kw[,1]*1000/(Cp.oil*(t2-t1))   #?
+m.oil$m2.oil.kg.s<-heatload.fluid.kw[,2]*1000/(Cp.oil*(t4-t3))
+m.oil$m3.oil.kg.s<-heatload.fluid.kw[,3]*1000/(Cp.oil*(t4-t3))
+m.oil$m4.oil.kg.s<-heatload.fluid.kw[,4]*1000/(Cp.oil*(t2-t1))
+
+colnames(m.oil)<-c("m1.oil.kg.s","m2.oil.kg.s","m3.oil.kg.s","m4.oil.kg.s")
+View(m.oil)
+
+
+range(m.oil$m1.oil.kg.s)
+range(m.oil$m2.oil.kg.s)
+range(m.oil$m3.oil.kg.s)
+range(m.oil$m4.oil.kg.s)
+mean(m.oil$m1.oil.kg.s)
+mean(m.oil$m3.oil.kg.s)
+```
+
+
+```{r}
+#Observing that heat exchanger 1 and 2 have exactly the same temperature range, we want to know why, thus we calculate the following:
+View(heatload.fluid.kw[,1]/heatload.fluid.kw[,2])
+View(heatload.fluid.kw[,3]/heatload.fluid.kw[,4])
+(t2-t1)/(t4-t3)
+(t4-t3)/(t2-t1)
+#count the number that these two aren't equal
+n<-0
+for (i in 1:length(heatload.fluid.kw[,1])){
+  if (heatload.fluid.kw[i,1]==0 |(heatload.fluid.kw[i,1]/heatload.fluid.kw[i,2])==(t2-t1)/(t4-t3)){
+    n<-n
+  }else{
+    n<n+1
+  }
+}
+print(n)
+
+n2<-0
+for (i in 1:length(heatload.fluid.kw[,3])){
+  if (heatload.fluid.kw[i,3]==0 |(heatload.fluid.kw[i,3]/heatload.fluid.kw[i,4])==(t4-t3)/(t2-t1)){
+    n2<-n2
+  }else{
+    n2<n2+1
+  }
+}
+print(n2)
+```
+
+```{r}
+#Add constraints to the fluid we're tracking.
+#Find a reasonable size for the hot and cold tank.
+#propose a storage capacity.
+#half size of an olympic swimming pool, 
+V.htank1<-0.1*50*25*3   #375 m3
+V.htank2<-0.1*50*25*3
+V.ctank1<-0.1*50*25*3
+V.ctank2<-0.1*50*25*3
+
+#Tranck the volume of oil in the hot and cold tanks
+V.h1<-rep(0,length(m.oil$m1.oil.kg.s))   #m3
+V.h2<-rep(0,length(m.oil$m1.oil.kg.s)) 
+V.c1<-rep(0,length(m.oil$m1.oil.kg.s)) 
+V.c2<-rep(0,length(m.oil$m1.oil.kg.s)) 
+
+#suppose that all the tanks start from half full.
+for (i in 1:length(m.oil$m1.oil.kg.s)){
+  if (i==1){
+    V.c1[i]<-0.5*V.ctank1
+    V.h1[i]<-0.5*V.htank1
+    }else{
+      V.c1[i]<-V.c1[i-1]+((m.oil$m1.oil.kg.s[i] + m.oil$m4.oil.kg.s[i])*3600/rou.oil)
+      V.h1[i]<-V.c1[1]+V.h1[1]-V.c1[i]  
+    #The total volume of the fluid in hot tank1 and cold tank 1 is fixed, V.c1[1]+V.h1[1]
+      }
+}
+range(V.c1)
+range(V.h1)
+
+#The maximum of percentage (peak load volume requirement of 1 hour/total volume of the tank) #about 10%, which is reasonable
+range((m.oil$m1.oil.kg.s + m.oil$m4.oil.kg.s)*3600/rou.oil)/V.htank1
+
+
+
+#suppose that all the tanks start from half full.
+for (i in 1:length(m.oil$m2.oil.kg.s)){
+  if (i==1){
+    V.c2[i]<-0.5*V.ctank2
+    V.h2[i]<-0.5*V.htank2
+    }else{
+      V.c2[i]<-V.c2[i-1]+((m.oil$m2.oil.kg.s[i] + m.oil$m3.oil.kg.s[i])*3600/rou.oil)
+      V.h2[i]<-V.c2[1]+V.h2[1]-V.c2[i]  
+    #The total volume of the fluid in hot tank1 and cold tank 1 is fixed, V.c1[1]+V.h1[1]
+      }
+}
+
+range(V.c2)
+range(V.h2)
+
+#The maximum of percentage (peak load volume requirement of 1 hour/total volume of the tank)    #about 10%, which is reasonable
+range((m.oil$m2.oil.kg.s + m.oil$m3.oil.kg.s)*3600/rou.oil)/V.htank2
+
+#The range of the two cold and hot tanks are exactly the same as expected.
+```
+
+```{r}
+#Now consider the thermal loss of the cold and hot tanks
+#To achieve the minimum surface area, we use cylindrical tanks.
+
+r.tank<-(2*V.htank1/(4*pi))^(1/3)  #m  radius
+h.tank<-V.htank1/(pi*r.tank^2)   #7.815926 m
+#rou.tes<-2750  #kg/m3
+#Cp.tes<-916  #j/(kg*k)
+
+k.tank<-55      #w/(m*k)      #thermal conductivity of the tes
+k.ins<- 0.021 #W/(m*K)      #thermal conductivity of the insulation
+d.tank<-0.1  #m thickness of tes
+d.ins<-0.1  # thickness of the insulation
+k.air.c<-0.022    #W/(m K) t=-40c
+k.air.h<-0.045    #W/(m K) t=300c
+
+#overall heat transfer coefficient, for the surfaces except the top surfaces
+U.outer<- 1/(d.tank/k.ins + d.ins/k.tank )
+
+
+A.top<- pi*(r.tank + d.ins)^2 + 2*pi*(r.tank + d.ins)*(h.tank + 2*d.ins)  #m2
+A.other<- pi*(r.tank + d.ins)^2
+
+#The height of the air in tank
+h.air.c1<-rep(0,length(m.oil[,1]))
+h.air.h1<-rep(0,length(m.oil[,1]))
+h.air.c2<-rep(0,length(m.oil[,1]))
+h.air.h2<-rep(0,length(m.oil[,1]))
+
+#The transfer coeficient of the top surface of the tank
+U.top.c1<-rep(0,length(m.oil[,1]))
+U.top.h1<-rep(0,length(m.oil[,1]))
+U.top.c2<-rep(0,length(m.oil[,1]))
+U.top.h2<-rep(0,length(m.oil[,1]))
+
+heatloss.w<-matrix(0,length(m.oil[,1]),4)
+
+for (i in 1:length(m.oil[,1])){
+  
+  h.air.c1[i]<-(V.htank1-V.c1[i])/(pi*r.tank^2)
+  h.air.h1[i]<-(V.htank1-V.h1[i])/(pi*r.tank^2)
+  h.air.c2[i]<-(V.htank1-V.c2[i])/(pi*r.tank^2)
+  h.air.h2[i]<-(V.htank1-V.h2[i])/(pi*r.tank^2)
+  
+  U.top.c1[i]<-1/(d.tank/k.ins + d.ins/k.tank +h.air.c1[i]/k.air.c)
+  U.top.h1[i]<-1/(d.tank/k.ins + d.ins/k.tank +h.air.h1[i]/k.air.h)
+  U.top.c2[i]<-1/(d.tank/k.ins + d.ins/k.tank +h.air.c2[i]/k.air.c)
+  U.top.h2[i]<-1/(d.tank/k.ins + d.ins/k.tank +h.air.h2[i]/k.air.h)
+  
+ heatloss.w[i,1]<-abs((t1-T.0)*(A.other*U.outer + U.top.c1[i]*A.top)) #*V.c1[i]*rou.oil
+ heatloss.w[i,2]<-abs((t2-T.0)*(A.other*U.outer + U.top.h1[i]*A.top)) #*V.h1[i]*rou.oil
+ heatloss.w[i,3]<-abs((t3-T.0)*(A.other*U.outer + U.top.c2[i]*A.top)) #*V.c2[i]*rou.oil
+ heatloss.w[i,4]<-abs((t4-T.0)*(A.other*U.outer + U.top.h2[i]*A.top)) #*V.h2[i]*rou.oil
+ colnames(heatloss.w)<-c("heatloss.c1","heatloss.h1","heatloss.c2","heatloss.h2")
+}
+
+sum(heatloss.w[,1]+ heatloss.w[,2] + heatloss.w[,3] + heatloss.w[,4] )
+sum(heatloss.w[,1] + heatloss.w[,3])
+mean(heatloss.w[,1] + heatloss.w[,3])
+```
+
+```{r}
+#Making ice
+#Suppose t1 becomes 273 instead of 243, there will be 30K of temperature difference for making ice.
+#latent heat of water melting
+h.water<-334000 #J/kg
+Cp.water<-4190   #J/(kg K)
+rou.ice<-916.2    #kg/m3
+t1_prime<-t1+30
+t3_prime<-t3+30
+m.oil_prime<-matrix(0,length(m.oil[,1]),2)
+V.ice.1<-rep(0,length(m.oil[,1]))
+V.ice.2<-rep(0,length(m.oil[,1]))
+for (i in 1:length(m.oil[,1])){
+  m.oil_prime[i,1]<-bags$charge.kg.s[i]*Cp*(T1-T.0)/(Cp.oil*(t2-t1_prime))
+  m.oil_prime[i,2]<-bags$charge.kg.s[i]*Cp*(T2-T.sea)/(Cp.oil*(t4-t3_prime))
+  V.ice.1[i]<- 30*effi*Cp.oil*m.oil_prime[i,1]/((h.water+ Cp.water*(T.0-273))*rou.ice)
+  V.ice.2[i]<- 30*effi*Cp.oil*m.oil_prime[i,2]/((h.water+ Cp.water*(T.0-273))*rou.ice) 
+}
+
+sum(V.ice.1)
+sum(V.ice.2)
+sum(V.ice.1 +V.ice.2)
+
+
+#Exploring the limit of ice production by setting the effectiveness to 1, means you have perfect heat transfer in the heat exchangers.
+t1_prime_max<-max(t.oil.1)
+t3_prime_max<-max(t.oil.3)
+m.oil_prime_max<-matrix(0,length(m.oil[,1]),2)
+V.ice.1.max<-rep(0,length(m.oil[,1]))
+V.ice.2.max<-rep(0,length(m.oil[,1]))
+for (i in 1:length(m.oil[,1])){
+  m.oil_prime_max[i,1]<-bags$charge.kg.s[i]*Cp*(T1-T.0)/(Cp.oil*(t2-t1_prime_max))
+  m.oil_prime_max[i,2]<-bags$charge.kg.s[i]*Cp*(T2-T.sea)/(Cp.oil*(t4-t3_prime_max))
+  V.ice.1.max[i]<- 30*effi*Cp.oil*m.oil_prime_max[i,1]/((h.water+ Cp.water*(T.0-273))*rou.ice)
+  V.ice.2.max[i]<- 30*effi*Cp.oil*m.oil_prime_max[i,2]/((h.water+ Cp.water*(T.0-273))*rou.ice) 
+}
+
+sum(V.ice.1.max)
+sum(V.ice.2.max)
+sum(V.ice.1.max +V.ice.2.max)
+# Interesting finding that if we set the effectiveness to 1 for both the first and second heat exchanger the volume of the ice produced by the two heat exchangers are going to be exactly the same, still little though.
